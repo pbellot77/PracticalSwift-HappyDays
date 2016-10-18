@@ -14,19 +14,23 @@ import UIKit
 class MemoriesViewController: UICollectionViewController, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
   
   var memories = [URL]()
+  var activeMemory: URL!
+  var audioRecorder: AVAudioRecorder?
+  var recordingURL: URL!
+  var audioPlayer: AVAudioPlayer?
 
   override func viewDidLoad() {
     super.viewDidLoad()
     loadMemories()
     
-    navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add,
-                                                        target: self,
-                                                        action: #selector(addTapped))
+    recordingURL = getDocumentsDirectory().appendingPathComponent("recording.m4a")
+    
+    navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self,
+      action: #selector(addTapped))
   }
   
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
-    
     checkPermissions()
   }
   
@@ -79,8 +83,7 @@ class MemoriesViewController: UICollectionViewController, UIImagePickerControlle
   }
   
   func getDocumentsDirectory() -> URL {
-    let paths = FileManager.default.urls(for: .documentDirectory,
-                                         in: .userDomainMask)
+    let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
     let documentsDirectory = paths[0]
     return documentsDirectory
   }
@@ -89,10 +92,9 @@ class MemoriesViewController: UICollectionViewController, UIImagePickerControlle
     memories.removeAll()
     
     // attempt to load all the memories in our documents directory
-    guard let files = try? FileManager.default.contentsOfDirectory(at: getDocumentsDirectory(),
-                                                                   includingPropertiesForKeys: nil,
-                                                                   options: [])
-      else { return }
+    guard let files = try? FileManager.default.contentsOfDirectory(at: getDocumentsDirectory(), includingPropertiesForKeys: nil,
+      options: [])
+        else { return }
     
     // loop over every file found
     for file in files {
@@ -193,19 +195,150 @@ class MemoriesViewController: UICollectionViewController, UIImagePickerControlle
     let image = UIImage(contentsOfFile: imageName)
     cell.imageView.image = image
     
+    if cell.gestureRecognizers == nil {
+      let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(memoryLongPress))
+      recognizer.minimumPressDuration = 0.25
+      
+      cell.addGestureRecognizer(recognizer)
+      cell.layer.borderColor = UIColor.white.cgColor
+      cell.layer.borderWidth = 3
+      cell.layer.cornerRadius = 10
+    }
+    
     return cell
   }
   
-  override func collectionView(_ collectionView: UICollectionView, viewForSupplementaryElementOfKind kind: String, at indexPath: IndexPath) -> UICollectionReusableView {
-    return collectionView.dequeueReusableSupplementaryView(ofKind: kind, withReuseIdentifier: "Header", for: indexPath)
+  override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+    let memory = memories[indexPath.row]
+    let fm = FileManager.default
+    
+    do {
+      let audioName = audioURL(for: memory)
+      let transcriptionName = transcriptionURL(for: memory)
+      
+      if fm.fileExists(atPath: audioName.path) {
+        audioPlayer = try AVAudioPlayer(contentsOf: audioName)
+        audioPlayer?.play()
+      }
+      
+      if fm.fileExists(atPath: transcriptionName.path) {
+        let contents = try String(contentsOf: transcriptionName)
+          print(contents)
+      }
+    } catch {
+        print("Error loading audio")
+    }
   }
   
-  func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, referenceSizeForHeaderInSection section: Int) -> CGSize {
-    if section == 1 {
-      return CGSize.zero
-    } else {
-      return CGSize(width: 0, height: 50)
+  func memoryLongPress(sender: UILongPressGestureRecognizer) {
+    if sender.state == .began {
+      let cell = sender.view as! MemoryCell
+      
+        if let index = collectionView?.indexPath(for: cell) {
+          activeMemory = memories[index.row]
+          recordMemory()
+        }
+      } else if sender.state == .ended {
+          finishRecording(success: true)
+      }
+  }
+  
+  func recordMemory() {
+    audioPlayer?.stop()
+    collectionView?.backgroundColor = UIColor(red: 0.5, green: 0, blue: 0, alpha: 1)
+    
+    let recordingSession = AVAudioSession.sharedInstance()
+    
+    do {
+      try recordingSession.setCategory(AVAudioSessionCategoryPlayAndRecord, with: .defaultToSpeaker)
+      try recordingSession.setActive(true)
+      
+      let settings = [AVFormatIDKey: Int(kAudioFormatMPEG4AAC), AVSampleRateKey: 44100,
+        AVNumberOfChannelsKey: 2, AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue]
+      
+      audioRecorder = try AVAudioRecorder(url: recordingURL, settings: settings)
+      audioRecorder?.delegate = self
+      audioRecorder?.record()
+    } catch let error {
+        print("Failed to record: \(error)")
+        finishRecording(success: false)
     }
+  }
+  
+  func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+    if !flag {
+      finishRecording(success: false)
+    }
+  }
+  
+  func finishRecording(success: Bool) {
+    collectionView?.backgroundColor = UIColor.darkGray
+    
+    audioRecorder?.stop()
+    
+    if success {
+      do {
+        let memoryAudioURL = activeMemory.appendingPathComponent("m4a")
+        let fm = FileManager.default
+        
+        if fm.fileExists(atPath: memoryAudioURL.path) {
+          try fm.removeItem(at: memoryAudioURL)
+        }
+        try fm.moveItem(at: recordingURL, to: memoryAudioURL)
+        transcribeAudio(memory: activeMemory)
+      } catch let error {
+          print("Failure finishing recording: \(error)")
+      }
+    }
+  }
+  
+  func transcribeAudio(memory: URL) {
+    
+    // get the paths to where the audio is, and where the transcription should be
+    let audio = audioURL(for: memory)
+    let transcription = transcriptionURL(for: memory)
+    
+    // create a new recognizer and point it at our audio
+    let recognizer = SFSpeechRecognizer()
+    let request = SFSpeechURLRecognitionRequest(url: audio)
+    
+    // start recognition!
+    recognizer?.recognitionTask(with: request) { [unowned self] (result, error) in
+      
+      // abort if we didn't get any transcription back
+      guard let result = result else {
+        print("There was an error: \(error!)")
+        return
+      }
+      
+      // if we got the final transcription back, we need to write it to disk
+      if result.isFinal {
+        
+        // pull out the best transcription
+        let text = result.bestTranscription.formattedString
+        
+        // ...and write it to disk at the correct filename for this memory
+        do {
+          try text.write(to: transcription, atomically: true, encoding: String.Encoding.utf8)
+        } catch {
+          print("Failed to save transcription.")
+        }
+      }
+    }
+  }
+  
+  override func collectionView(_ collectionView: UICollectionView, viewForSupplementaryElementOfKind kind: String,
+    at indexPath: IndexPath) -> UICollectionReusableView {
+      return collectionView.dequeueReusableSupplementaryView(ofKind: kind, withReuseIdentifier: "Header", for: indexPath)
+  }
+  
+  func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout,
+    referenceSizeForHeaderInSection section: Int) -> CGSize {
+      if section == 1 {
+        return CGSize.zero
+      } else {
+        return CGSize(width: 0, height: 50)
+      }
   }
   
   
