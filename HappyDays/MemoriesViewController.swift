@@ -10,6 +10,8 @@ import AVFoundation
 import Photos
 import Speech
 import UIKit
+import CoreSpotlight
+import MobileCoreServices
 
 class MemoriesViewController: UICollectionViewController, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
   
@@ -320,6 +322,7 @@ class MemoriesViewController: UICollectionViewController, UIImagePickerControlle
         // ...and write it to disk at the correct filename for this memory
         do {
           try text.write(to: transcription, atomically: true, encoding: String.Encoding.utf8)
+          self.indexMemory(memory: memory, text: text)
         } catch {
           print("Failed to save transcription.")
         }
