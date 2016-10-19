@@ -13,7 +13,7 @@ import UIKit
 import CoreSpotlight
 import MobileCoreServices
 
-class MemoriesViewController: UICollectionViewController, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+class MemoriesViewController: UICollectionViewController, UIImagePickerControllerDelegate, UINavigationControllerDelegate, AVAudioRecorderDelegate {
   
   var memories = [URL]()
   var activeMemory: URL!
@@ -326,6 +326,30 @@ class MemoriesViewController: UICollectionViewController, UIImagePickerControlle
         } catch {
           print("Failed to save transcription.")
         }
+      }
+    }
+  }
+  
+  func indexMemory(memory: URL, text: String) {
+    
+    //create a basic attribute set
+    let attributeSet = CSSearchableItemAttributeSet(itemContentType: kUTTypeText as String)
+    attributeSet.title = "Happy Days Memory"
+    attributeSet.contentDescription = text
+    attributeSet.thumbnailURL = thumbnailURL(for: memory)
+    
+    // wrap it in a searchable item, using the memory's full path as its unique identifier
+    let item = CSSearchableItem(uniqueIdentifier: memory.path, domainIdentifier: "com.hackingwithswift", attributeSet: attributeSet)
+    
+    // make it never expire
+    item.expirationDate = Date.distantFuture
+    
+    // ask Spotlight to index the item
+    CSSearchableIndex.default().indexSearchableItems([item]) { error in
+      if let error = error {
+        print("Indexing error: \(error.localizedDescription)")
+      } else {
+        print("Search item successfully indexed: \(text)")
       }
     }
   }
